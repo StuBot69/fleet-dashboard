@@ -1,0 +1,16 @@
+# Runtime artifacts — insurance, not record.
+*.db
+*.db-shm
+*.db-wal
+*.log
+*.err.log
+
+# Backups: regenerated from the live files, not versioned.
+backups/
+
+# Python
+__pycache__/
+*.pyc
+
+# macOS
+.DS_Store

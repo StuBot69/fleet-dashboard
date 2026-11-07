@@ -1,0 +1,783 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Fleet Control — model assignment & free-lane spread</title>
+<style>
+  :root{
+    --bg:#00060a; --card:rgba(2,14,20,.82); --inset:#010d13; --line:rgba(0,229,255,.14); --line2:rgba(0,229,255,.3);
+    --fg:#bff6ff; --hot:#d9fdff; --mut:#4f8a96; --acc:#00e5ff; --ok:#39ff14;
+    --warn:#ffb300; --bad:#ff003c; --free:#b026ff; --mag:#ff2bd6;
+    --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+    --tooltip-max-width: 2100px;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--fg);
+    font:13px/1.5 var(--mono);letter-spacing:.02em;
+    background-image:radial-gradient(ellipse at top,rgba(0,229,255,.07),transparent 60%);background-attachment:fixed}
+  header{padding:18px 24px;border-bottom:1px solid var(--line);
+    display:flex;align-items:baseline;gap:16px;flex-wrap:wrap;position:sticky;top:0;
+    background:rgba(0,6,10,.92);backdrop-filter:blur(6px);z-index:10}
+  h1{font-size:16px;margin:0;font-weight:700;color:var(--acc);letter-spacing:.12em;text-transform:uppercase;text-shadow:0 0 12px rgba(0,229,255,.45)}
+  .sub{color:var(--mut);font-size:12px}
+  .grow{flex:1}
+  button{background:var(--acc);color:#00060a;border:0;font-family:inherit;letter-spacing:.04em;padding:7px 14px;border-radius:6px;
+    font-weight:600;cursor:pointer;font-size:13px}
+  button.ghost{background:transparent;color:var(--fg);border:1px solid var(--line2)}
+  button.danger{background:var(--mag);color:#00060a;box-shadow:0 0 14px rgba(255,43,214,.35)}
+  button.ghost:hover{border-color:var(--acc);color:var(--acc)}
+  button:disabled{opacity:.45;cursor:not-allowed}
+  main{padding:20px 24px 90px;max-width:1500px}
+  h2{font-size:13px;text-transform:uppercase;letter-spacing:.08em;color:var(--mut);
+    margin:30px 0 12px;font-weight:600}
+  h2:first-of-type{margin-top:8px}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:8px;box-shadow:inset 0 0 0 1px rgba(0,229,255,.03);padding:14px 16px}
+  table{width:100%;border-collapse:collapse;font-size:13px}
+  th{text-align:left;color:var(--mut);font-weight:600;font-size:11px;text-transform:uppercase;
+    letter-spacing:.05em;padding:8px;border-bottom:1px solid var(--line2);white-space:nowrap}
+  td{padding:7px 8px;border-bottom:1px solid var(--line);vertical-align:middle}
+  tr:last-child td{border-bottom:0}
+  select{background:var(--inset);color:var(--fg);border:1px solid var(--line2);border-radius:5px;
+    padding:5px 7px;font-size:12px;max-width:260px;font-family:inherit}
+  select:focus{outline:1px solid var(--acc);border-color:var(--acc)}
+  select.dirty{border-color:var(--warn);background:rgba(255,179,0,.09)}
+  .role{color:var(--mut);font-size:12px;max-width:320px}
+  .tag{display:inline-block;padding:1px 7px;border-radius:10px;font-size:10px;
+    text-transform:uppercase;letter-spacing:.05em;font-weight:600;border:1px solid}
+  .t-worker{color:var(--acc);border-color:rgba(0,229,255,.4)}
+  .t-overlord{color:var(--free);border-color:rgba(176,38,255,.5)}
+  .t-reserve,.t-desktop{color:var(--warn);border-color:rgba(255,179,0,.4)}
+  .st{font-size:11px;padding:2px 7px;border-radius:4px;font-weight:600;white-space:nowrap}
+  .s-ok{background:rgba(57,255,20,.15);color:var(--ok)}
+  .s-bad{background:rgba(255,0,60,.15);color:var(--bad)}
+  .s-warn{background:rgba(255,179,0,.15);color:var(--warn)}
+  .s-un{background:rgba(0,229,255,.06);color:var(--mut)}
+  .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(215px,1fr));gap:12px}
+  .kpi{background:var(--card);border:1px solid var(--line);border-radius:8px;padding:12px 14px}
+  .kpi .n{font-size:23px;font-weight:700;letter-spacing:-.02em}
+  .kpi .l{color:var(--mut);font-size:11px;text-transform:uppercase;letter-spacing:.05em;margin-top:2px}
+  .free{color:var(--free)} .paid{color:var(--warn)}
+  .muted{color:var(--mut)} .small{font-size:11.5px}
+  .pill{display:inline-block;padding:1px 6px;border-radius:4px;background:rgba(0,229,255,.06);
+    color:var(--mut);font-size:10.5px;margin:1px 2px 1px 0;font-family:ui-monospace,monospace}
+  .pill.ok{background:rgba(57,255,20,.15);color:var(--ok)}
+  .pill.warn{background:rgba(255,179,0,.15);color:var(--warn)}
+  .pill.bad{background:rgba(255,0,60,.15);color:var(--bad)}
+  /* Fleet table container - horizontal scroll fix */
+  .table-wrap{overflow-x:auto}
+  #fleet{width:100%;min-width:1200px}
+  /* Detail row for Function/Advice + System Prompt Summary */
+  .detail-row td{padding:0;border:0;background:transparent}
+  .detail-cell{padding:8px 12px 10px 52px;font-size:12px;color:var(--mut);border-top:1px solid var(--line);background:rgba(0,24,34,.55)}
+  .detail-cell .label{color:var(--acc);font-weight:600;font-size:10px;text-transform:uppercase;letter-spacing:.05em;margin-right:8px}
+  .detail-toggle{cursor:pointer;user-select:none;font-size:10px;color:var(--mut);margin-left:8px}
+  .detail-toggle:hover{color:var(--acc)}
+  .detail-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:12px;margin-top:8px}
+  .detail-item{background:rgba(0,6,10,.6);border:1px solid var(--line);border-radius:6px;padding:8px 10px}
+  .detail-item .label{display:block;margin-bottom:4px}
+  .detail-item code{font-size:11px;background:rgba(0,6,10,.8);padding:1px 4px;border-radius:3px}
+  .detail-soul-preview{font-family:ui-monospace,monospace;font-size:11px;color:var(--mut);white-space:pre-wrap;max-height:120px;overflow:auto;background:rgba(0,6,10,.5);padding:8px;border-radius:4px;border:1px solid var(--line)}
+  .wire-row{display:flex;gap:10px;align-items:baseline;padding:5px 0;border-bottom:1px solid var(--line)}
+  .wire-row:last-child{border-bottom:0}
+  .wire-row .p{color:var(--hot);min-width:110px;font-weight:600}
+  .wire-row .l{color:var(--mag);min-width:110px}
+  .wire-head{display:flex;gap:12px;align-items:center;flex-wrap:wrap;margin-bottom:8px}
+  #gwBar{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+  .non-chat{opacity:.55;font-style:italic}
+  .non-chat .tag{opacity:.5}
+  /* Pinned row style */
+  .pinned-row{background:rgba(176,38,255,.08)}
+  .pinned-row td:first-child::before{content:"★ ";color:var(--free)}
+  /* Hover tooltip */
+  .has-tooltip{position:relative;cursor:help}
+  .has-tooltip:hover::after{
+    content:attr(data-tip);
+    position:absolute;left:0;bottom:100%;margin-bottom:6px;
+    background:var(--card);border:1px solid var(--line);border-radius:6px;
+    padding:8px 12px;font-size:11.5px;color:var(--fg);white-space:pre-wrap;
+    max-width:var(--tooltip-max-width);z-index:30;box-shadow:0 4px 16px rgba(0,0,0,.5)
+  }
+  /* Profile modal */
+  .modal-overlay{position:fixed;inset:0;background:rgba(0,0,0,.7);display:none;align-items:center;justify-content:center;z-index:100;padding:20px}
+  .modal-overlay.open{display:flex}
+  .modal{background:var(--card);border:1px solid var(--line);border-radius:10px;max-width:1100px;width:100%;max-height:95vh;overflow:auto;display:flex;flex-direction:column}
+  .modal-header{display:flex;align-items:center;justify-content:space-between;padding:14px 18px;border-bottom:1px solid var(--line)}
+  .modal-header h3{margin:0;font-size:15px}
+  .modal-tabs{display:flex;border-bottom:1px solid var(--line);background:rgba(0,24,34,.55);flex-wrap:wrap}
+  .modal-tab{padding:10px 16px;cursor:pointer;color:var(--mut);font-size:12px;font-weight:600;border-bottom:2px solid transparent;margin-bottom:-1px}
+  .modal-tab.active{color:var(--acc);border-bottom-color:var(--acc)}
+  .modal-body{padding:16px 18px;overflow:auto;flex:1}
+  .modal-panel{display:none}
+  .modal-panel.active{display:block}
+  .modal-panel pre{background:var(--inset);border:1px solid var(--line);border-radius:6px;padding:14px;font-size:12px;max-height:60vh;overflow:auto;white-space:pre-wrap;font-family:ui-monospace,monospace}
+  .modal-panel textarea{width:100%;min-height:50vh;background:var(--inset);color:var(--fg);border:1px solid var(--line2);border-radius:6px;padding:12px;font:12px ui-monospace,monospace;resize:vertical}
+  .modal-panel textarea:focus{outline:1px solid var(--acc);border-color:var(--acc)}
+  .modal-actions{display:flex;gap:10px;justify-content:flex-end;padding:12px 18px;border-top:1px solid var(--line)}
+  .profile-link{cursor:pointer;color:var(--acc);text-decoration:none}
+  .profile-link:hover{text-decoration:underline}
+  .loading{color:var(--mut);font-style:italic}
+  /* SOUL.md enhancements */
+  .soul-toolbar{display:flex;gap:8px;margin-bottom:8px;flex-wrap:wrap}
+  .soul-search{flex:1;min-width:200px;padding:6px 10px;background:var(--inset);color:var(--fg);border:1px solid var(--line2);border-radius:4px;font-size:12px}
+  .soul-search:focus{outline:1px solid var(--acc);border-color:var(--acc)}
+  .soul-rendered{background:var(--inset);border:1px solid var(--line);border-radius:6px;padding:16px;max-height:70vh;overflow:auto;font-size:13px;line-height:1.6;color:var(--fg)}
+  .soul-rendered h1,.soul-rendered h2,.soul-rendered h3{border-bottom:1px solid var(--line);padding-bottom:4px;margin-top:16px}
+  .soul-rendered code{background:rgba(0,6,10,.8);padding:1px 5px;border-radius:3px;font-family:ui-monospace,monospace}
+  .soul-rendered pre{background:var(--inset);border:1px solid var(--line);border-radius:4px;padding:10px;overflow:auto}
+  .soul-rendered pre code{background:transparent;padding:0}
+  .soul-rendered blockquote{border-left:3px solid var(--acc);padding-left:12px;color:var(--mut);margin:8px 0}
+  .soul-rendered ul,.soul-rendered ol{padding-left:24px}
+  .soul-rendered hr{border:0;border-top:1px solid var(--line);margin:16px 0}
+  .soul-rendered strong{color:var(--acc)}
+  .soul-rendered em{color:var(--free)}
+  /* Meta panel */
+  .meta-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:12px}
+  .meta-card{background:rgba(0,24,34,.55);border:1px solid var(--line);border-radius:8px;padding:14px 16px}
+  .meta-card .label{display:block;font-size:10px;text-transform:uppercase;letter-spacing:.05em;color:var(--acc);font-weight:600;margin-bottom:6px}
+  .meta-card .value{font-family:ui-monospace,monospace;font-size:13px;color:var(--fg);word-break:break-word}
+  .meta-card .value code{background:rgba(0,6,10,.8);padding:1px 4px;border-radius:3px}
+</style>
+</head>
+<body>
+<header>
+  <h1>Fleet Control</h1>
+  <span class="sub" id="stamp">loading…</span>
+  <span class="grow"></span>
+  <span id="guardStatus" class="pill">guard: checking…</span>
+  <span id="wirePill" class="pill">wiring: checking…</span>
+  <span id="gwPill" class="pill">gateway: checking…</span>
+  <button class="ghost" id="btnRefresh">Refresh lanes</button>
+  <button class="ghost" id="btnPlan">Preview changes</button>
+  <button class="danger" id="btnApply" disabled>Apply</button>
+</header>
+
+<main>
+  <div id="alerts"></div>
+
+  <h2>Wiring &amp; gateway</h2>
+  <div class="card">
+    <div class="wire-head">
+      <span class="muted small" style="flex:1">Every lane a profile routes to needs a <code>providers:</code> stanza and its key in that profile's <code>.env</code>.
+        Apply fills these in automatically; this catches anything changed outside the dashboard.</span>
+      <button class="ghost" id="btnWireFix" style="display:none">Fix wiring</button>
+    </div>
+    <div id="wireOut" class="small muted">checking…</div>
+    <div id="gwBar" style="margin-top:12px;padding-top:10px;border-top:1px solid var(--line)">
+      <span class="small muted" id="gwText">gateway: checking…</span>
+      <span class="grow"></span>
+      <button class="ghost" id="btnGwIdle">Restart when idle</button>
+      <button class="ghost" id="btnGwNow">Restart now</button>
+      <button class="ghost" id="btnGwCancel" style="display:none">Cancel wait</button>
+    </div>
+  </div>
+
+  <h2>Lane spread — the OpenRouter bottleneck</h2>
+  <div class="grid" id="kpis"></div>
+  <div class="card" style="margin-top:12px">
+    <table id="lanes"><thead><tr>
+      <th>Lane</th><th>Free headroom</th><th>Bottleneck</th><th>Quality</th><th>Catalogue</th>
+    </tr></thead><tbody></tbody></table>
+  </div>
+
+  <h2>Profiles — main + fallbacks</h2>
+    <div class="sub" style="margin-bottom:9px">
+      Each dropdown lists every endpoint in the live catalogue, grouped by lane. Change one and it
+      goes amber. Nothing is written until you press <b>Preview changes</b>, read the diff, then
+      <b>Apply</b>. Every touched config is backed up first. Hover a profile name for its function.
+      Click a profile name to open its detail page (config.yaml, SOUL.md, .env).
+    </div>
+    <div class="card table-wrap" style="padding:4px 10px">
+        <table id="fleet"><thead><tr>
+                  <th>Profile</th><th>Main model</th>
+                  <th>Fallback 1</th><th>Fallback 2</th><th>Fallback 3</th>
+                </tr></thead><tbody></table>
+      </div>
+
+  <h2>External muscle — not Hermes profiles</h2>
+  <div class="card" id="ext"></div>
+
+  <h2>Plan diff</h2>
+  <div id="planOut" class="muted small">No changes previewed yet.</div>
+</main>
+
+<div class="sticky-actions" id="sticky">
+  <b id="dirtyCount">0</b> pending change(s)
+  <span class="grow"></span>
+  <span class="muted small" id="dirtyNames"></span>
+  <button class="ghost" id="btnReset">Discard</button>
+  <button class="danger" id="btnApply2">Apply changes</button>
+</div>
+
+<div id="toast"></div>
+
+<!-- Profile Detail Modal -->
+<div class="modal-overlay" id="modalOverlay">
+  <div class="modal">
+    <div class="modal-header">
+      <h3 id="modalTitle">Profile Detail</h3>
+      <button class="ghost" id="modalClose" style="padding:4px 10px;font-size:12px">Close</button>
+    </div>
+    <div class="modal-tabs">
+      <button class="modal-tab active" data-tab="config">config.yaml</button>
+      <button class="modal-tab" data-tab="soul">SOUL.md</button>
+      <button class="modal-tab" data-tab="env">.env (vars only)</button>
+      <button class="modal-tab" data-tab="meta">Meta</button>
+    </div>
+    <div class="modal-body">
+      <div class="modal-panel active" id="panel-config">
+        <div class="loading">Loading config…</div>
+      </div>
+      <div class="modal-panel" id="panel-soul">
+        <div class="loading">Loading SOUL.md…</div>
+      </div>
+      <div class="modal-panel" id="panel-env">
+        <div class="loading">Loading .env…</div>
+      </div>
+      <div class="modal-panel" id="panel-meta">
+        <div class="loading">Loading metadata…</div>
+      </div>
+    </div>
+    <div class="modal-actions">
+      <button class="ghost" id="btnSaveConfig" style="display:none">Save config</button>
+      <button class="ghost" id="btnSaveSoul" style="display:none">Save SOUL.md</button>
+    </div>
+  </div>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+<script>
+// ---------- state
+let STATE = null;
+let DIRTY = {};      // profile -> {choice, fallbacks:[lane/model...]}  (ONLY for changed profiles)
+const ORIG = {};     // profile -> {choice, fallbacks}                   (as loaded from disk)
+let MODAL_PROFILE = null;
+
+// ---------- helpers
+const $ = id => document.getElementById(id.replace(/^#/, ''));
+const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const toast = (m, ok = true) => {
+  const t = $('toast'); t.textContent = m; t.style.borderLeftColor = ok ? 'var(--ok)' : 'var(--bad)';
+  t.style.display = 'block'; clearTimeout(t._t); t._t = setTimeout(() => t.style.display = 'none', 5200);
+};
+const fmtT = ts => ts ? new Date(ts * 1000).toLocaleString() : '—';
+const choiceOf = (lane, model) => model ? (lane ? `${lane}/${model}` : model) : '';
+
+// health lookup by model slug (health table has lane + model)
+function healthOf(lane, model) {
+  return STATE.health.find(h => h.model === model && (!lane || h.lane === lane)) ||
+         STATE.health.find(h => h.model === model) || null;
+}
+
+function healthBadge(lane, model) {
+  const h = healthOf(lane, model);
+  if (!h) return '<span class="st s-un">no sweep data</span>';
+  const y = h.tools_yes || 0, nn = (h.tools_yes || 0) + (h.tools_no || 0);
+  // A hard failure on the CURRENT sample outranks cumulative tool evidence.
+  // tools_yes is a running tally: a lane that worked yesterday and is blocked
+  // today (402 billing/check-in, 404 dead) still carries tools_yes > 0, and
+  // checking that first painted a dead lane green. http is the live sample.
+  if (h.http === 402) {
+    return `<span class="st s-bad" title="blocked: billing or daily check-in required. Needs a human at ${esc(h.lane || 'the provider')} — this never self-clears.">402 blocked</span>`;
+  }
+  if (h.http === 404) {
+    return `<span class="st s-bad" title="model not found on the provider's live list.">404 dead</span>`;
+  }
+  if (h.http === 429) {
+    return `<span class="st s-warn" title="throttled right now — may recover on its own.">429 throttled</span>`;
+  }
+  if (y > 0) {
+    return `<span class="st s-ok" title="tool call seen in ${y} of ${nn} probes. Read as a tendency, not a verdict.">OK · tools ${y}/${nn}</span>`;
+  }
+  if (h.http === 200) {
+    if (nn > 0) return `<span class="st s-un" title="no tool call in ${nn} probes, but the model answered. Probes are noise - a real tool task is the verdict.">OK · tools 0/${nn}</span>`;
+    return '<span class="st s-un">OK · tools ?</span>';
+  }
+  if (h.http === 403) return '<span class="st s-warn" title="gated to agentic harnesses — Hermes qualifies">403 harness-gated</span>';
+  if (h.http === 404) return '<span class="st s-bad">404 dead</span>';
+  if (h.http === 429) return '<span class="st s-warn">429 throttled</span>';
+  if (h.http) return `<span class="st s-bad">${h.http}</span>`;
+  return '<span class="st s-un">dead/timeout</span>';
+}
+
+// Build the <option> list for one dropdown.
+function buildOptions(current) {
+  const items = STATE.catalog.items || [];
+  const groups = {};
+  items.forEach(it => {
+    const v = choiceOf(it.lane, it.model);
+    (groups[it.lane] = groups[it.lane] || []).push({v, free: it.is_free === 1, model: it.model, live: it.live});
+  });
+  const lanes = Object.keys(groups).sort((a, b) => (a === 'anthropic') - (b === 'anthropic') || a.localeCompare(b));
+  const html = [];
+  if (current && !items.some(it => choiceOf(it.lane, it.model) === current)) {
+    html.push(`<optgroup label="current (not in catalogue)"><option value="${esc(current)}" selected>${esc(current)}</option></optgroup>`);
+  }
+  if (!current) html.push('<option value="">— none —</option>');
+  lanes.forEach(ln => {
+    const lst = groups[ln].slice().sort((a, b) => (b.free - a.free) || a.model.localeCompare(b.model));
+    const stale = lst.some(x => x.live === 0);
+    html.push(`<optgroup label="${esc(ln)}${stale ? ' (stale)' : ''}">`);
+    lst.forEach(x => {
+      const mark = x.free ? '★' : '$';
+      html.push(`<option value="${esc(x.v)}" ${x.v === current ? 'selected' : ''}>${mark} ${esc(x.model)}</option>`);
+    });
+    html.push('</optgroup>');
+  });
+  return html.join('');
+}
+
+// Role tooltip text from ROLES
+function roleTooltip(profile) {
+  const r = STATE.roles[profile];
+  if (!r) return '';
+  const [type, func, brain, advice] = r;
+  return `Function: ${func}\nBrain fit: ${brain}\nAdvice: ${advice}`;
+}
+
+function render() {
+  // ---- alerts
+  const al = [];
+  const dead = new Set(STATE.health.filter(h => h.http === 404).map(h => h.model));
+  const deadProfiles = STATE.profiles.filter(p => dead.has(p.model) || (p.fallbacks || []).some(f => dead.has(f.split('/').slice(1).join('/'))));
+  if (deadProfiles.length) al.push(`<div class="warnbox"><b>${deadProfiles.length} profile(s) point at a model the last sweep says is dead:</b> ${deadProfiles.map(p => '<code>' + esc(p.profile) + '</code>').join(', ')}. Fix in the table below.</div>`);
+  const guardless = STATE.profiles.filter(p => p.provider === 'nvidia' && !p.via_guard);
+  if (guardless.length) al.push(`<div class="warnbox"><b>nvidia provider but NOT routed through nvidia-guard</b> (spends the shared 10k/day pool uncounted): ${guardless.map(p => '<code>' + esc(p.profile) + '</code>').join(', ')}.</div>`);
+  const stale = Object.entries(STATE.catalog.lanes || {}).filter(([, l]) => !l.ok);
+  if (stale.length) al.push(`<div class="warnbox"><b>Catalogue stale for:</b> ${stale.map(([k, l]) => '<code>' + esc(k) + '</code> (' + esc(l.error || 'no data') + ')').join(', ')}. Last-known models kept.</div>`);
+  $('alerts').innerHTML = al.join('');
+
+  // ---- guard status
+  const gs = $('guardStatus');
+  if (STATE.guard_up) {
+    gs.textContent = 'guard: UP';
+    gs.className = 'pill ok';
+  } else {
+    gs.textContent = 'guard: DOWN';
+    gs.className = 'pill bad';
+  }
+
+  // ---- kpis
+  const n = STATE.profiles.length;
+  const orN = STATE.by_provider['openrouter'] || 0;
+  const k = [
+    {n, l: 'profiles'},
+    {n: orN, l: 'on OpenRouter', c: orN / Math.max(n, 1) > 0.5 ? 'var(--bad)' : 'var(--ok)'},
+    {n: STATE.profiles.filter(p => p.via_guard).length, l: 'through nvidia-guard'},
+    {n: (STATE.catalog.items || []).filter(i => i.is_free === 1).length, l: 'free endpoints in catalogue'},
+  ];
+  $('kpis').innerHTML = k.map(x => `<div class="kpi"><div class="n" style="color:${x.c || 'var(--fg)'}">${x.n}</div><div class="l">${x.l}</div></div>`).join('');
+
+  // ---- lanes
+  const tb = document.querySelector('#lanes tbody'); tb.innerHTML = '';
+  Object.entries(STATE.lane_budget).forEach(([lane, b]) => {
+    const cl = (STATE.catalog.lanes || {})[lane];
+    const cat = cl ? (cl.ok ? `${cl.n} models · live` : `<span class="st s-warn">stale · ${cl.n} kept</span>`) : '<span class="muted">—</span>';
+    const tr = document.createElement('tr');
+    tr.innerHTML = `<td><b>${esc(lane)}</b></td><td class="small">${esc(b.free_headroom)}</td>
+      <td class="small muted">${esc(b.bottleneck)}</td><td class="small">${esc(b.quality)}</td><td class="small">${cat}</td>`;
+    tb.appendChild(tr);
+  });
+
+  // ---- profile table (system-bot pinned at top)
+  const fb = document.querySelector('#fleet tbody'); fb.innerHTML = '';
+  
+  // Sort: system-bot first, then default, then rest alphabetically
+  const sortedProfiles = [...STATE.profiles].sort((a, b) => {
+    if (a.profile === 'system-bot') return -1;
+    if (b.profile === 'system-bot') return 1;
+    if (a.profile === 'default') return -1;
+    if (b.profile === 'default') return 1;
+    return a.profile.localeCompare(b.profile);
+  });
+
+  sortedProfiles.forEach(p => {
+    if (p.error) {
+      fb.insertAdjacentHTML('beforeend', `<tr><td><b>${esc(p.profile)}</b></td><td colspan="4" class="small" style="color:var(--bad)">config unreadable: ${esc(p.error)}</td></tr>`);
+      return;
+    }
+    const r = STATE.roles[p.profile] || ['worker', '', '', ''];
+    const cur = [choiceOf(p.provider, p.model), ...(p.fallbacks || []).slice(0, 3)];
+    ORIG[p.profile] = {choice: cur[0], fallbacks: cur.slice(1).filter(Boolean)};
+    const fitCls = r[2] === 'big' ? 's-ok' : r[2] === 'med' ? 's-warn' : 's-un';
+    const isNonChat = p.profile === 'cf-image-gen' || p.profile === 'image-gen';
+    const nonChatCls = isNonChat ? 'non-chat' : '';
+    const pinnedCls = p.profile === 'system-bot' ? 'pinned-row' : '';
+    const tr = document.createElement('tr');
+    tr.className = nonChatCls + ' ' + pinnedCls;
+    const tip = roleTooltip(p.profile);
+    tr.innerHTML = `
+      <td><a class="profile-link has-tooltip" data-profile="${esc(p.profile)}" data-tip="${esc(tip)}"><b>${esc(p.profile)}</b></a>${p.via_guard ? ' <span class="pill ok">guard</span>' : ''}<div>${healthBadge(p.provider, p.model)}</div></td>
+      <td><select data-f="0"></select></td>
+      <td><select data-f="1"></select></td>
+      <td><select data-f="2"></select></td>
+      <td><select data-f="3"></select></td>`;
+    fb.appendChild(tr);
+    // Detail row (collapsible) - enhanced with system prompt summary
+    const detailTr = document.createElement('tr');
+    detailTr.className = 'detail-row ' + nonChatCls;
+    detailTr.style.display = 'none';
+    // Build system prompt summary from profile metadata
+    const soulPreview = (p.soul || '').trim();
+    const hasSoul = soulPreview.length > 0;
+    const toolset = p.toolset || 'safe';
+    const skillsCount = p.skills_count !== undefined ? p.skills_count : '?';
+    const ctxLen = p.context_length ? `${p.context_length.toLocaleString()}` : '—';
+    detailTr.innerHTML = `<td colspan="5"><div class="detail-cell">
+      <span class="label">Function:</span> ${esc(r[1] || '—')}
+      <span class="label" style="margin-left:16px">Brain:</span> <span class="st ${fitCls}">${esc(r[2] || '?')}</span>
+      <span class="label" style="margin-left:16px">Advice:</span> ${esc(r[3] || '—')}
+      <span class="detail-toggle" title="collapse">▲</span>
+      <div class="detail-grid">
+        <div class="detail-item"><span class="label">Toolset:</span> <code>${esc(toolset)}</code></div>
+        <div class="detail-item"><span class="label">Skills:</span> <code>${esc(String(skillsCount))}</code></div>
+        <div class="detail-item"><span class="label">Context window:</span> <code>${esc(ctxLen)}</code></div>
+      </div>
+      ${hasSoul ? `<div class="detail-item" style="grid-column:1/-1"><span class="label">SOUL.md preview (full content):</span>
+        <div class="detail-soul-preview">${esc(soulPreview)}</div></div>` : ''}
+    </div></td>`;
+    fb.appendChild(detailTr);
+    // Click handler to toggle detail row
+    tr.style.cursor = 'pointer';
+    tr.addEventListener('click', (e) => {
+      if (e.target.tagName === 'SELECT' || e.target.tagName === 'A') return;
+      const open = detailTr.style.display !== 'none';
+      detailTr.style.display = open ? 'none' : 'table-row';
+      tr.querySelector('.detail-toggle').textContent = open ? '▼' : '▲';
+    });
+    // Click on profile name -> open modal
+    tr.querySelector('.profile-link').addEventListener('click', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      openModal(p.profile);
+    });
+    tr.querySelectorAll('select').forEach((s, i) => {
+      s.innerHTML = buildOptions(cur[i] || '');
+      s.addEventListener('change', () => {
+        const d = DIRTY[p.profile] || {choice: ORIG[p.profile].choice, fallbacks: [...ORIG[p.profile].fallbacks]};
+        const sels = [...tr.querySelectorAll('select')].map(x => x.value);
+        d.choice = sels[0];
+        d.fallbacks = [...sels.slice(1).filter(Boolean), ...ORIG[p.profile].fallbacks.slice(3)];
+        const same = d.choice === ORIG[p.profile].choice &&
+                     JSON.stringify(d.fallbacks) === JSON.stringify(ORIG[p.profile].fallbacks);
+        if (same) delete DIRTY[p.profile]; else DIRTY[p.profile] = d;
+        tr.querySelectorAll('select').forEach((x, j) => x.classList.toggle('dirty', !!DIRTY[p.profile] && x.value !== [ORIG[p.profile].choice, ...ORIG[p.profile].fallbacks][j]));
+        renderSticky();
+      });
+    });
+  });
+
+  $('ext').innerHTML = STATE.external.map(e =>
+    `<div class="ext"><div class="nm">${esc(e.name)} <span class="muted small">— ${esc(e.what)}</span></div>
+     <div class="small" style="margin:3px 0"><b>Best for:</b> ${esc(e.best_for)}</div>
+     <div class="small" style="color:var(--warn)"><b>Catch:</b> ${esc(e.catch)}</div></div>`).join('');
+
+  const ts = [...STATE.health.map(h => h.checked_at), ...Object.values(STATE.catalog.lanes || {}).map(l => l.checked_at)];
+  $('stamp').textContent = 'last sweep ' + fmtT(Math.max(0, ...ts)) + ' · ' + n + ' profiles · ' + (STATE.catalog.items || []).length + ' catalogue entries';
+}
+
+function renderSticky() {
+  const ks = Object.keys(DIRTY);
+  $('sticky').classList.toggle('on', ks.length > 0);
+  $('dirtyCount').textContent = ks.length;
+  $('dirtyNames').textContent = ks.join(', ');
+  $('btnApply').disabled = !ks.length;
+  $('planOut').innerHTML = '<span class="muted small">Pending changes — press Preview to see the exact diff.</span>';
+}
+
+const post = async (u, b, method='POST') => (await fetch(u, {method, headers: {'Content-Type': 'application/json'}, body: JSON.stringify(b)})).json();
+
+$('btnPlan').onclick = async () => {
+  if (!Object.keys(DIRTY).length) return toast('Nothing pending.');
+  const r = await post('/api/plan', {changes: DIRTY});
+  if (!r.diffs || !r.diffs.length) {
+    $('planOut').innerHTML = '<div class="okbox">No differences — the configs already match your selection.</div>';
+    return;
+  }
+  const lines = r.diffs.map(d => d.profile + (d.error ? '  ERROR: ' + d.error : '') + '\n' +
+    (d.changes || []).map(c => '  ' + c.field + ':\n    - ' + JSON.stringify(c.from ?? '(unset)') + '\n    + ' + JSON.stringify(c.to ?? '(unset)')).join('\n'));
+  $('planOut').innerHTML = `<div class="${r.note && r.note.includes('WARNING') ? 'warnbox' : 'warnbox'}"><b>${esc(r.note)}</b></div><pre>${esc(lines.join('\n'))}</pre>`;
+  $('planOut').scrollIntoView({behavior: 'smooth'});
+};
+
+const doApply = async () => {
+  const names = Object.keys(DIRTY);
+  if (!names.length) return;
+  if (!confirm('Apply these changes to ' + names.length + ' profile config(s)?\n\n' + names.join(', ') +
+               '\n\nEach file is backed up to fleet-dashboard/backups first.')) return;
+  const r = await post('/api/apply', {apply: true, changes: DIRTY});
+  if (r.error) return toast(r.error, false);
+  const wired = (r.wired || []).map(w => w.profile + ': ' + w.wired.join(', ')).join(' | ');
+  toast('Applied: ' + (r.applied || []).join(', ') + (wired ? ' · auto-wired ' + wired : '') +
+        (r.failed && r.failed.length ? ' | SKIPPED: ' + r.failed.map(f => f.profile + ' (' + f.error + ')').join('; ') : ''),
+        !(r.failed && r.failed.length));
+  DIRTY = {}; renderSticky(); load(); loadWiring();
+  if ((r.applied || []).length) {
+    const gw = r.gateway || {};
+    const msg = 'Changes are on disk. The gateway must restart to pick them up (this restarts ALL bots).\n\n' +
+      (gw.busy ? 'The gateway looks BUSY right now' + (gw.sessions && gw.sessions.length ? ' (' + gw.sessions.join(', ') + ')' : '') +
+                 '.\nOK = restart automatically as soon as it is idle (waits up to 30 min).'
+               : 'It looks idle.\nOK = restart now.') + '\nCancel = leave it, restart later from the Wiring & gateway panel.';
+    if (confirm(msg)) gwRestart(gw.busy ? 'when-idle' : 'now');
+  }
+};
+$('btnApply').onclick = doApply;
+$('btnApply2').onclick = doApply;
+$('btnReset').onclick = () => { DIRTY = {}; renderSticky(); load(); };
+$('btnRefresh').onclick = async () => {
+  toast('Pulling the live catalogue…');
+  const r = await post('/api/refresh', {});
+  if (r.error) return toast('Refresh failed: ' + r.error, false);
+  if (r.catalogue && r.catalogue.error) return toast('Catalogue failed: ' + r.catalogue.error, false);
+  const lanes = r.catalogue || {};
+  const summary = Object.keys(lanes).map(k => k + ' ' + lanes[k]).join(' · ');
+  toast('Catalogue updated — ' + summary + '. Health sweep running in the background (~6 min).');
+  load();
+};
+
+// Modal functions
+function openModal(profile) {
+  MODAL_PROFILE = profile;
+  $('modalTitle').textContent = profile;
+  $('panel-config').innerHTML = '<div class="loading">Loading config…</div>';
+  $('panel-soul').innerHTML = '<div class="loading">Loading SOUL.md…</div>';
+  $('panel-env').innerHTML = '<div class="loading">Loading .env…</div>';
+  $('panel-meta').innerHTML = '<div class="loading">Loading metadata…</div>';
+  $('btnSaveConfig').style.display = 'none';
+  $('btnSaveSoul').style.display = 'none';
+  // Switch to config tab
+  document.querySelectorAll('.modal-tab').forEach(t => t.classList.remove('active'));
+  document.querySelectorAll('.modal-panel').forEach(p => p.classList.remove('active'));
+  document.querySelector('[data-tab="config"]').classList.add('active');
+  $('#panel-config').classList.add('active');
+  $('btnSaveConfig').style.display = 'inline-block';
+  $('modalOverlay').classList.add('open');
+  // Load all data
+  fetch('/api/profile/' + encodeURIComponent(profile))
+    .then(r => r.json())
+    .then(d => {
+      $('#panel-config').innerHTML = `<textarea id="configArea" spellcheck="false">${esc(d.config)}</textarea>`;
+      // Render SOUL.md as markdown with toolbar and search
+      const soulHtml = d.soul && d.soul.trim() ? marked.parse(d.soul) : '<div class="muted" style="padding:20px">No SOUL.md content</div>';
+      $('#panel-soul').innerHTML = `
+        <div class="soul-toolbar">
+          <input type="text" class="soul-search" id="soulSearch" placeholder="Search SOUL.md…" aria-label="Search SOUL.md">
+          <button class="ghost" id="soulViewRaw" style="font-size:11px">View raw</button>
+        </div>
+        <div class="soul-rendered" id="soulRendered">${soulHtml}</div>
+        <textarea id="soulArea" spellcheck="false" style="display:none">${esc(d.soul)}</textarea>
+      `;
+      // Add search functionality
+      const searchInput = $('#soulSearch');
+      const rendered = $('#soulRendered');
+      const rawArea = $('#soulArea');
+      let viewRaw = false;
+      searchInput.addEventListener('input', () => {
+        const term = searchInput.value.toLowerCase();
+        if (!term) {
+          rendered.innerHTML = soulHtml;
+          return;
+        }
+        // Highlight matches
+        const walker = document.createTreeWalker(rendered, NodeFilter.SHOW_TEXT, null, false);
+        const matches = [];
+        let node;
+        while (node = walker.nextNode()) {
+          if (node.textContent.toLowerCase().includes(term)) {
+            matches.push(node);
+          }
+        }
+        // Simple highlight by re-rendering with mark
+        if (matches.length) {
+          let html = d.soul;
+          const regex = new RegExp(`(${esc(term)})`, 'gi');
+          html = html.replace(regex, '<mark style="background:var(--warn);color:#00060a;padding:0 2px;border-radius:2px">$1</mark>');
+          rendered.innerHTML = marked.parse(html);
+          // Scroll to first match
+          const firstMark = rendered.querySelector('mark');
+          if (firstMark) firstMark.scrollIntoView({behavior: 'smooth', block: 'center'});
+        }
+      });
+      $('#soulViewRaw').addEventListener('click', () => {
+        viewRaw = !viewRaw;
+        rendered.style.display = viewRaw ? 'none' : 'block';
+        rawArea.style.display = viewRaw ? 'block' : 'none';
+        searchInput.style.display = viewRaw ? 'none' : 'block';
+        $('#soulViewRaw').textContent = viewRaw ? 'View rendered' : 'View raw';
+      });
+      $('#panel-env').innerHTML = `<pre>${esc(d.env)}</pre>`;
+      // Populate Meta panel
+      const toolset = d.toolset || 'safe';
+      const skillsCount = d.skills_count !== undefined ? d.skills_count : '?';
+      const ctxLen = d.context_length ? `${d.context_length.toLocaleString()}` : '—';
+      const provider = d.provider || '—';
+      const lane = d.lane || '—';
+      $('#panel-meta').innerHTML = `
+        <div class="meta-grid">
+          <div class="meta-card"><span class="label">Profile</span><div class="value"><code>${esc(profile)}</code></div></div>
+          <div class="meta-card"><span class="label">Provider</span><div class="value"><code>${esc(provider)}</code></div></div>
+          <div class="meta-card"><span class="label">Lane</span><div class="value"><code>${esc(lane)}</code></div></div>
+          <div class="meta-card"><span class="label">Toolset</span><div class="value"><code>${esc(toolset)}</code></div></div>
+          <div class="meta-card"><span class="label">Skills installed</span><div class="value"><code>${esc(String(skillsCount))}</code></div></div>
+          <div class="meta-card"><span class="label">Context window</span><div class="value"><code>${esc(ctxLen)}</code></div></div>
+        </div>
+      `;
+      $('btnSaveConfig').style.display = 'inline-block';
+      $('btnSaveSoul').style.display = 'inline-block';
+    })
+    .catch(e => {
+      $('#panel-config').innerHTML = `<div class="warnbox">Error loading: ${esc(e.message)}</div>`;
+      $('#panel-soul').innerHTML = `<div class="warnbox">Error loading: ${esc(e.message)}</div>`;
+      $('#panel-env').innerHTML = `<div class="warnbox">Error loading: ${esc(e.message)}</div>`;
+      $('#panel-meta').innerHTML = `<div class="warnbox">Error loading: ${esc(e.message)}</div>`;
+    });
+}
+
+function closeModal() {
+  $('modalOverlay').classList.remove('open');
+  MODAL_PROFILE = null;
+}
+
+function init() {
+  // Modal event handlers
+  const modalClose = $('modalClose');
+  const modalOverlay = $('modalOverlay');
+  if (modalClose) modalClose.onclick = closeModal;
+  if (modalOverlay) modalOverlay.onclick = (e) => { if (e.target === modalOverlay) closeModal(); };
+
+  // Tab switching
+  document.querySelectorAll('.modal-tab').forEach(tab => {
+    tab.onclick = () => {
+      document.querySelectorAll('.modal-tab').forEach(t => t.classList.remove('active'));
+      document.querySelectorAll('.modal-panel').forEach(p => p.classList.remove('active'));
+      tab.classList.add('active');
+      $('#panel-' + tab.dataset.tab).classList.add('active');
+      const isConfig = tab.dataset.tab === 'config';
+      const isSoul = tab.dataset.tab === 'soul';
+      $('btnSaveConfig').style.display = isConfig ? 'inline-block' : 'none';
+      $('btnSaveSoul').style.display = isSoul ? 'inline-block' : 'none';
+    };
+  });
+
+  // Save config
+  const btnSaveConfig = $('btnSaveConfig');
+  if (btnSaveConfig) {
+    btnSaveConfig.onclick = async () => {
+      const config = $('#configArea').value;
+      const r = await post('/api/profile/' + encodeURIComponent(MODAL_PROFILE) + '/config', {config}, 'PUT');
+      if (r.ok) {
+        toast('Saved config.yaml (backup: ' + r.backup + ')' + (r.wired && r.wired.length ? ' · auto-wired: ' + r.wired.join(', ') : '') + (r.unwired && r.unwired.length ? ' · NOT wired: ' + r.unwired.join(', ') : ''), !(r.unwired && r.unwired.length));
+        loadWiring();
+        load();
+      } else {
+        toast('Save failed: ' + r.error, false);
+      }
+    };
+  }
+
+  // Save SOUL.md
+  const btnSaveSoul = $('btnSaveSoul');
+  if (btnSaveSoul) {
+    btnSaveSoul.onclick = async () => {
+      const soul = $('#soulArea').value;
+      const r = await post('/api/profile/' + encodeURIComponent(MODAL_PROFILE) + '/soul', {soul}, 'PUT');
+      if (r.ok) {
+        toast('Saved SOUL.md');
+      } else {
+        toast('Save failed: ' + r.error, false);
+      }
+    };
+  }
+
+  // Sticky bar buttons
+  $('btnApply').onclick = doApply;
+  $('btnApply2').onclick = doApply;
+  $('btnReset').onclick = () => { DIRTY = {}; renderSticky(); load(); };
+  $('btnRefresh').onclick = async () => {
+    toast('Pulling the live catalogue…');
+    const r = await post('/api/refresh', {});
+    if (r.error) return toast('Refresh failed: ' + r.error, false);
+    if (r.catalogue && r.catalogue.error) return toast('Catalogue failed: ' + r.catalogue.error, false);
+    const lanes = r.catalogue || {};
+    const summary = Object.keys(lanes).map(k => k + ' ' + lanes[k]).join(' · ');
+    toast('Catalogue updated — ' + summary + '. Health sweep running in the background (~6 min).');
+    load();
+  };
+}
+
+async function load() {
+  STATE = await (await fetch('/api/state')).json();
+  render();
+  renderSticky();
+}
+
+async function loadWiring() {
+  const r = await (await fetch('/api/wiring')).json();
+  const rows = [];
+  let fixable = 0;
+  for (const [prof, v] of Object.entries(r)) for (const g of (v.gaps || [])) {
+    if (g.fixable) fixable++;
+    rows.push(`<div class="wire-row"><span class="p">${esc(prof)}</span><span class="l">${esc(g.lane)}</span>` +
+      `<span class="pill ${g.fixable ? 'warn' : 'bad'}">${g.kind === 'key' ? 'no key' : 'no stanza'}</span>` +
+      `<span class="muted">${esc(g.detail)}</span></div>`);
+  }
+  $('wireOut').innerHTML = rows.length ? rows.join('') :
+    '<span style="color:var(--ok)">All wired - every main and fallback lane has its stanza and key.</span>';
+  $('wirePill').className = 'pill ' + (rows.length ? 'warn' : 'ok');
+  $('wirePill').textContent = rows.length ? `wiring: ${rows.length} gap(s)` : 'wiring: ok';
+  $('btnWireFix').style.display = fixable ? 'inline-block' : 'none';
+  $('btnWireFix').textContent = `Fix ${fixable} gap(s)`;
+}
+
+function renderGateway(g) {
+  const rs = g.restart || {};
+  const waiting = rs.state === 'waiting';
+  const busy = g.busy ? `busy${g.sessions.length ? ' (' + g.sessions.join(', ') + ')' : ''}` : 'idle';
+  $('gwPill').className = 'pill ' + (g.busy ? 'warn' : 'ok');
+  $('gwPill').textContent = 'gateway: ' + (waiting ? 'restart queued' : busy);
+  const last = rs.state && rs.state !== 'idle' ? ` · last restart: ${rs.state}${rs.note ? ' - ' + rs.note.split('\n').pop() : ''}` : '';
+  $('gwText').textContent = `gateway (all bots share one): ${busy}` +
+    (g.log_age_s != null ? ` · last log ${g.log_age_s}s ago` : '') + (waiting ? ' · will restart when idle' : '') + last;
+  $('btnGwCancel').style.display = waiting ? 'inline-block' : 'none';
+  $('btnGwIdle').disabled = waiting;
+}
+
+async function loadGateway() { renderGateway(await (await fetch('/api/gateway')).json()); }
+
+async function gwRestart(mode) {
+  if (mode === 'now' && !confirm('Restart the gateway now? Every bot drops whatever it is doing.')) return;
+  renderGateway(await post('/api/gateway/restart', {mode}));
+  toast(mode === 'now' ? 'Gateway restarting…' : mode === 'cancel' ? 'Restart cancelled' : 'Gateway will restart as soon as it is idle');
+}
+
+$('btnWireFix').onclick = async () => {
+  const r = await post('/api/wiring/fix', {});
+  const fixed = Object.entries(r).flatMap(([p, v]) => (v.fixed || []).map(g => p + ' ' + g.lane));
+  toast('Wired: ' + (fixed.join(', ') || 'nothing') + ' · backups in fleet-dashboard/backups. Restart the gateway to pick it up.');
+  loadWiring();
+};
+$('btnGwNow').onclick = () => gwRestart('now');
+$('btnGwIdle').onclick = () => gwRestart('when-idle');
+$('btnGwCancel').onclick = () => gwRestart('cancel');
+setInterval(loadGateway, 10000);
+
+// Auto-refresh catalogue on page load
+(async () => {
+  try {
+    const r = await post('/api/refresh', {});
+    if (!r.error && r.catalogue && !r.catalogue.error) {
+      const lanes = r.catalogue || {};
+      const summary = Object.keys(lanes).map(k => k + ' ' + lanes[k]).join(' · ');
+      toast('Catalogue auto-refreshed — ' + summary);
+    }
+  } catch (e) {
+    console.warn('Auto-refresh failed:', e);
+  }
+  load();
+  init();
+  loadWiring();
+  loadGateway();
+})();
+</script>
+</body>
+</html>
