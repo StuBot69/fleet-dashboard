@@ -52,6 +52,23 @@ MIN_HEALTH_ROWS = 20
 # it never takes chat or kanban work.
 NON_CHAT_PROFILES = {"image-gen", "cf-image-gen"}
 
+# Hard failures that need a HUMAN on the provider side. apinex gates its free
+# tier behind a daily check-in, so both primaries answer 402 until Stu checks
+# in. These are TRACKED but not re-alerted every run - the alert is about the
+# CHANGE, not about the fact that a known problem still exists.
+KNOWN_FAILS = {
+    ("coder", "apinex", "free/qwen-3.8-max", 402),
+    ("oracle", "apinex", "free/minimax-m3.1-flash", 402),
+}
+
+# Fingerprint state: what was reported last run. An UNCHANGED finding is
+# reported once and then stays quiet; a new, changed or cleared finding still
+# speaks. This file is runtime state, not record - it is gitignored.
+STATE_FILE = os.path.join(DASH_DIR, "watchdog-state.json")
+
+HARD_FAILS = {402: "billing / daily check-in required",
+              404: "model no longer on the provider's live list"}
+
 
 def check_dashboard():
     """The UI must be listening and answering. This is the gap that bit us."""
@@ -272,6 +289,25 @@ def _liveness_probe(lane, model, key, timeout=90):
         return None
 
 
+def _load_state():
+    try:
+        with open(STATE_FILE) as fh:
+            d = json.load(fh)
+            return d if isinstance(d, dict) else {}
+    except Exception:
+        return {}
+
+
+def _save_state(state):
+    try:
+        tmp = STATE_FILE + ".tmp"
+        with open(tmp, "w") as fh:
+            json.dump(state, fh, indent=2, sort_keys=True)
+        os.replace(tmp, STATE_FILE)
+    except Exception:
+        pass
+
+
 def check_primary_health():
     """A profile whose PRIMARY model is currently blocked is a silent failure.
 
@@ -292,6 +328,14 @@ def check_primary_health():
     share only 9 distinct primaries, and NVIDIA calls are slow. Only a hard
     HTTP status fails the check - a timeout is inconclusive, because slow is
     normal on that lane and a false alarm would train Stu to ignore the alert.
+
+    **A finding that is unchanged since the last run is reported ONCE.** The
+    apinex 402s have been true since 6 Nov 26 and the job fires every 6h, so
+    the same line was delivered 27 times over 50 runs - which is how a
+    genuinely new fault gets missed. The alert is about the CHANGE. A new
+    failure, a changed failure, or a CLEARED failure still speaks. The
+    unchanged known failures are still TRACKED and shown in the vault doc and
+    the dashboard badge - they are just not re-pinged.
     """
     try:
         import yaml  # noqa: F401
@@ -307,10 +351,6 @@ def check_primary_health():
         keys = refresh_mod.load_keys()
     except Exception:
         keys = {}
-
-    # Hard failures that a fallback can mask but only a human can fix.
-    HARD_FAILS = {402: "billing / daily check-in required",
-                  404: "model no longer on the provider's live list"}
 
     # Deduplicate: many profiles share one primary.
     primaries = []
@@ -353,21 +393,65 @@ def check_primary_health():
             # 5xx - is worth a mention but usually recovers on its own.
             bad.append(f"{prof} -> {lane}/{model} [live http={http}]")
 
-    if bad:
-        return False, (
-            f"{len(bad)} profile primary model(s) not healthy on a live probe: "
-            + "; ".join(bad[:6])
+    # Fingerprint the hard failures so an unchanged one can go quiet.
+    # key = "prof|lane|model|http"
+    findings = {}
+    for prof, lane, model, http in results:
+        if http in HARD_FAILS:
+            findings[f"{prof}|{lane}|{model}|{http}"] = (
+                f"{prof} -> {lane}/{model} [{http} {HARD_FAILS[http]}]"
+            )
+
+    state = _load_state()
+    prev = set(state.get("primary_health_findings") or [])
+    now = set(findings)
+
+    # Persist BEFORE deciding what to print, so a run that prints nothing
+    # still records that these findings were already reported.
+    state["primary_health_findings"] = sorted(now)
+    state["last_run_at"] = int(time.time())
+    _save_state(state)
+
+    # A finding is NEW if it was not in the previous run's set. A CLEARED
+    # finding (in prev, not now) is also worth one line - the lane recovered.
+    new = sorted(now - prev)
+    cleared = sorted(prev - now)
+    quiet_known = sorted(now & prev)
+
+    if not new and not cleared:
+        # Nothing changed. Stay silent about the hard failures entirely.
+        if quiet_known:
+            return True, (
+                f"{len(quiet_known)} known primary failure(s) unchanged since last run "
+                "(not re-alerted)"
+            )
+        note = ""
+        if inconclusive or skipped:
+            bits = []
+            if inconclusive:
+                bits.append(f"{len(inconclusive)} timed out (slow lane, inconclusive)")
+            if skipped:
+                bits.append(f"{len(skipped)} skipped: {', '.join(skipped[:2])}")
+            note = " (" + "; ".join(bits) + ")"
+        return True, "all profile primaries answered a live probe" + note
+
+    lines = []
+    if new:
+        lines.append(
+            f"{len(new)} profile primary model(s) not healthy on a live probe: "
+            + "; ".join(findings[k] for k in new)
             + ". The fallback chain will answer, but it is masking a dead primary."
         )
-    note = ""
-    if inconclusive or skipped:
-        bits = []
-        if inconclusive:
-            bits.append(f"{len(inconclusive)} timed out (slow lane, inconclusive)")
-        if skipped:
-            bits.append(f"{len(skipped)} skipped: {', '.join(skipped[:2])}")
-        note = " (" + "; ".join(bits) + ")"
-    return True, "all profile primaries answered a live probe" + note
+    if cleared:
+        lines.append(
+            f"{len(cleared)} previously failing primary/primaries now RECOVERED: "
+            + "; ".join(cleared)
+        )
+    if quiet_known:
+        lines.append(
+            f"({len(quiet_known)} known failure(s) still unchanged, not re-alerted)"
+        )
+    return False, " | ".join(lines)
 
 
 def main():

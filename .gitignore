@@ -5,6 +5,10 @@
 *.log
 *.err.log
 
+# Watchdog dedupe state: which findings were already reported.
+# Runtime state, not record — regenerated on the next run.
+watchdog-state.json
+
 # Backups: regenerated from the live files, not versioned.
 backups/
 
